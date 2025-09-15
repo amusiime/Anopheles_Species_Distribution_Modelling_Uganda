@@ -1,0 +1,58 @@
+---
+title: "SDM Steps"
+author: "Alex Musiime"
+date: "2025-09-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#Formatting equations in R markdown
+
+## https://rpruim.github.io/s341/S19/from-class/MathinRmd.html
+```{r}
+Data 
+ An_gambiae or An_funestus counts (y) -village level or coordinate points
+ 
+ y~poisson($\lambda \Lambda$)
+ 
+ $\lambda \Lambda$ varies by each village or coordinate points depenfding on the covariates
+ -climatic variables
+ -land cover
+ -land use
+ -elevation
+ -distance to water bodies
+ -human population density
+ -intervention variables (ITN coverage, IRS coverage)
+ -socio-economic variables (wealth index, education level)
+ -housing quality (wall type, roof type, floor type)
+ -seasonality (wet or dry season)
+ -temporal variables (year, month)
+ -bias term (travel time to nearest city)
+ --incidence/prevalence of malaria
+ -intervention variables (ITN coverage, IRS coverage)
+ 
+ Training data 80%
+ Test/evaluate20%
+ 
+ Models to try and later
+ 
+ -Environmental only
+ -Environmental +Observation bias
+ -Environmental +Observation bias+intervention
+ -Environmental +Observation bias+intervention+demography
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+```
+

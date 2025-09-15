@@ -18,20 +18,44 @@ female_funestus <- 0:400
 female_constani <- 0:100
 has_net <- c("yes","no")
 has_the_house_sprayed_before <- c("yes","no")
+# bounding box for Uganda (approx)
+lon_min <- 29.5
+lon_max <- 35.0
+lat_min <- -1.5
+lat_max <- 4.5
+
+# create household-level dataset with fixed coordinates
+
+hh_coord <- expand_grid(
+  region_id = 1:n_regions,
+  district_id = 1:n_districts,
+  village_id = 1:n_villages,
+  household_id = 1:n_households_per_village
+) %>%
+  mutate(
+    id = paste(region_id, district_id, village_id, household_id, sep = "_"),
+    lon = runif(n(), lon_min, lon_max),
+    lat = runif(n(), lat_min, lat_max)
+  ) |> 
+  select(id, lon, lat)
+
 
 # Monthly survey dates
 date_range <- seq.Date(from = as.Date("2020-01-01"),
                        to   = as.Date("2024-12-31"),
                        by   = "month")
 
+
+# create household-level dataset with fixed coordinates
 # Household × Month structure
+
 hh_month_attributes <- expand_grid(
   region_id = 1:n_regions,
   district_id = 1:n_districts,
   village_id = 1:n_villages,
   household_id = 1:n_households_per_village,
   date = date_range
-) %>%
+) |> 
   mutate(
     id = paste(region_id, district_id, village_id, household_id, sep = "_"),
     year_month = format(date, "%Y-%m"),   # group by month
@@ -46,7 +70,7 @@ hh_month_attributes <- expand_grid(
 
 # add mosquito counts using Poisson distribution
 
-sim_data <- hh_month_attributes %>%
+sim_data1 <- hh_month_attributes %>%
   mutate(
     gambiae_count  = rpois(n(), lambda = 15),
     funestus_count = rpois(n(), lambda = 20),
@@ -54,7 +78,10 @@ sim_data <- hh_month_attributes %>%
   )
 
 
-view(sim_data)
+sim_data <-sim_data1|> 
+          left_join(hh_coord,by = "id")
+
+write.csv(sim_data, "simulated_data.csv", row.names = FALSE)
   
   
   
