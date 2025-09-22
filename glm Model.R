@@ -141,18 +141,6 @@ count_model_3<- glm(
 
 summary(count_model_3)
 
-
-# Spatial prediction
-
-
-
-
-
-
-
-
-
-
 # predict on the data used to fit the model
 
 pred1 <- predict(count_model_1, 
@@ -224,4 +212,16 @@ g2<-ggplot(pred_long, aes(x = obs, y = pred, color = model)) +
   theme_minimal()
 
 print(g2)
+
+
+
+# Spatial prediction
+
+
+
+
+
+
+
+
 
