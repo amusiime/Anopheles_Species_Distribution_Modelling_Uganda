@@ -1,4 +1,8 @@
-.Rproj.user
-.Rhistory
-.RData
-.Ruserdata
+# Ignore everything
+*
+
+# Keep Git configuration
+!.gitignore
+
+# Keep main modelling script
+!glm Model.R
