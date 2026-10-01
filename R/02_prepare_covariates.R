@@ -1,475 +1,176 @@
-# ============================================================
-# 02_prepare_covariates.R
-# ENVIRONMENTAL + TRAVEL + CONTINENTAL COVARIATE EXTRACTION
-# UGANDA VECTOR ABUNDANCE MODELLING
-# ============================================================
 
-source("functions/helpers.R")
-
+library(traveltime)
 library(tidyverse)
-library(terra)
 library(geodata)
+library(terra)
+library(tidyterra)
+library(sdmtools)# To calculate points outside the terra object
 
-# ------------------------------------------------------------
-# 1. FILE PATHS
-# ------------------------------------------------------------
-
-input <- "data/processed/ento_clean.csv"
-env_file <- "data/raw/covariates2(1).tif"
-travel_file <- "data/raw/rescale_travel.tif"
-continental_file <- "data/raw/continental/uganda_preds_p.tif"
-cache <- "data/raw/.geodata"
-out <- "data/processed/model_data_environment.csv"
-
-dir.create(
-  "data/processed",
-  recursive = TRUE,
-  showWarnings = FALSE
+# get administrative area for a country
+uganda_shp <- gadm(
+  country = "UGA",
+  level = 0,
+  path = "/Users/alexm/Desktop/PH/Training/Resistance project/Travel time"
 )
 
-dir.create(
-  cache,
-  recursive = TRUE,
-  showWarnings = FALSE
+# have a look at it
+plot(uganda_shp)
+
+# download climactic data for this country
+bioclim_uganda <- worldclim_country(
+  country = "UGA",
+  var = "bio",
+  res = 0.5,
+  path = "/Users/alexm/Desktop/PH/Training/Resistance project/Travel time"
 )
 
-# ------------------------------------------------------------
-# 2. READ CLEANED ENTOMOLOGICAL DATA
-# ------------------------------------------------------------
+# subset to just
+# BIO5 = Max Temperature of Warmest Month
+# BIO6 = Min Temperature of Coldest Month
+# BIO12 = Annual Precipitation
+covs_uganda <- bioclim_uganda[[c(5, 6, 12)]] |>
+  # and mask to country shapefile
+  mask(uganda_shp)
 
-if (!file.exists(input)) {
-  stop(
-    "Cleaned entomological dataset not found: ",
-    input,
-    "\nRun R/01_clean_data.R first."
-  )
-}
+names(covs_uganda) <- c("tmax_warm", "tmin_cool", "precip")
 
-d <- read_csv(
-  input,
-  show_col_types = FALSE
+# have a look
+plot(covs_uganda)
+
+# make up some points that fall within the boundary of your
+# shapefile
+
+uganda_points <- read.csv("res_data_ug.csv", sep =";") |>
+rename(x = longitude, y = latitude) |>
+  dplyr::mutate(x=str_replace(x, ",","."),
+                y=str_replace(y, ",",".")) |> 
+  dplyr::select(x, y) |>
+  dplyr::mutate(x= parse_number(x),
+                y=parse_number(y))
+  
+# check that the points fall inside and edit above until they do
+plot(uganda_shp)
+points(uganda_points)
+
+# see points against each of the layers
+par(mfrow = c(2,2))
+plot(covs_uganda[[1]])
+points(uganda_points)
+
+plot(covs_uganda[[2]])
+points(uganda_points)
+
+plot(covs_uganda[[3]])
+points(uganda_points)
+
+par(mfrow = c(1,1))
+
+#####
+# turn covariates into raster package format for mess
+library(dismo)
+library(raster)
+
+# extract covariate values at our points
+coord_covs <- extract(
+  covs_uganda,
+  uganda_points
 )
 
-check_required(
-  d,
-  c(
-    "observation_id",
-    "longitude",
-    "latitude",
-    "an_gambiae_total",
-    "site_id",
-    "site_month_id",
-    "effort"
-  )
-)
+# convert layers to raster package for mess
+covraster <- raster::brick(covs_uganda)
 
-# ------------------------------------------------------------
-# 3. ENVIRONMENTAL RASTER
-# ------------------------------------------------------------
-# Band 1 = tmax
-# Band 2 = tmin
-# Band 3 = precipitation
-
-if (!file.exists(env_file)) {
-  stop(
-    "Environmental raster not found: ",
-    env_file
-  )
-}
-
-env <- rast(env_file)
-
-if (nlyr(env) < 3) {
-  stop(
-    "Environmental raster must contain at least 3 bands."
-  )
-}
-
-env <- env[[1:3]]
-
-names(env) <- c(
-  "tmax",
-  "tmin",
-  "precip"
-)
-
-# ------------------------------------------------------------
-# 4. VALID OBSERVATION COORDINATES
-# ------------------------------------------------------------
-
-valid <- d |>
-  filter(
-    is.finite(longitude),
-    is.finite(latitude)
-  )
-
-if (!nrow(valid)) {
-  stop(
-    "No valid working coordinates available for extraction."
-  )
-}
-
-pts <- vect(
-  valid,
-  geom = c(
-    "longitude",
-    "latitude"
-  ),
-  crs = "EPSG:4326"
-)
-
-# ------------------------------------------------------------
-# 5. ENVIRONMENTAL COVARIATES
-# ------------------------------------------------------------
-
-env_values <- terra::extract(
-  env,
-  pts,
-  ID = FALSE
+# calculate multivariate environmental similarity surface (MESS)
+# for our points against whole raster
+mess_uganda <- mess(
+  x = covraster,
+  v = coord_covs |>
+    dplyr::select(-ID) |>
+    as.data.frame()
 ) |>
-  as_tibble()
 
-model_data <- d |>
-  left_join(
-    bind_cols(
-      valid |>
-        select(observation_id),
-      env_values
-    ),
-    by = "observation_id"
-  )
+# we then convert back to terra for nicer plotting
+# and mask based on our earlier raster to remove Inf
+# calculations from NA areas
+rast() |>
+  mask(covs_uganda[[1]])
 
-# ------------------------------------------------------------
-# 6. TRAVEL ACCESSIBILITY
-# ------------------------------------------------------------
-#
-# Travel time to cities is converted to an accessibility index:
-#
-#   1 = highest accessibility
-#   0 = lowest accessibility
-#
-# The raster is created automatically if it does not exist.
-# It is then aligned to the environmental modelling grid.
-# ------------------------------------------------------------
+# plot the result
+plot(mess_uganda)
+points(uganda_points)
+# this result is in a unitless format but the closer to zero
+# the value is, the more similar
 
-if (!file.exists(travel_file)) {
-  
-  message(
-    "Travel raster not found. Preparing travel accessibility..."
-  )
-  
-  uga <- geodata::gadm(
-    "UGA",
-    level = 0,
-    path = cache
-  )
-  
-  travel <- geodata::travel_time(
-    to = "city",
-    size = 1,
-    path = cache
-  )
-  
-  # Ensure Uganda boundary uses the same CRS
-  # as the environmental raster.
-  uga <- terra::project(
-    uga,
-    env
-  )
-  
-  travel <- travel |>
-    crop(env[[1]]) |>
-    mask(uga) |>
-    resample(
-      env[[1]],
-      method = "bilinear"
-    )
-  
-  max_travel <- global(
-    travel,
-    "max",
-    na.rm = TRUE
-  )[1, 1]
-  
-  if (!is.finite(max_travel) || max_travel <= 0) {
-    stop(
-      "Travel raster has no positive finite values."
-    )
-  }
-  
-  travel <- 1 - (
-    travel / max_travel
-  )
-  
-  names(travel) <- "travel"
-  
-  writeRaster(
-    travel,
-    travel_file,
-    overwrite = TRUE
-  )
-  
-  message(
-    "Saved travel-accessibility raster: ",
-    travel_file
-  )
-  
-} else {
-  
-  message(
-    "Using existing travel raster: ",
-    travel_file
-  )
-  
-  travel <- rast(
-    travel_file
-  ) |>
-    resample(
-      env[[1]],
-      method = "bilinear"
-    )
-  
-  names(travel) <- "travel"
-}
+par(mfrow = c(2,2))
+plot(covs_uganda[[1]])
+points(uganda_points)
 
-# ------------------------------------------------------------
-# EXTRACT TRAVEL ACCESSIBILITY
-# ------------------------------------------------------------
+plot(covs_uganda[[2]])
+points(uganda_points)
 
-travel_values <- terra::extract(
-  travel,
-  pts,
-  ID = FALSE
-)[[1]]
+plot(covs_uganda[[3]])
+points(uganda_points)
 
-model_data <- model_data |>
-  select(
-    -any_of("travel")
-  ) |>
-  left_join(
-    tibble(
-      observation_id = valid$observation_id,
-      travel = travel_values
-    ),
-    by = "observation_id"
-  )
+plot(mess_uganda)
+points(uganda_points)
 
-# ------------------------------------------------------------
-# 7. CONTINENTAL AN. GAMBIAE OFFSET FOR M3
-# ------------------------------------------------------------
-#
-# Band 4 = An. gambiae continental prediction surface.
-#
-# Only the Gambiae surface is used as the M3 ecological offset.
-#
-# The continental raster is externally supplied and is never
-# fabricated by this workflow.
-# ------------------------------------------------------------
+par(mfrow = c(1,1))
 
-if (!file.exists(continental_file)) {
-  
-  model_data$log_continental_offset <- NA_real_
-  
-  warning(
-    "Continental raster not found: ",
-    continental_file,
-    "\nM1 and M2 can be prepared, but M3 requires this raster."
-  )
-  
-} else {
-  
-  continental <- rast(
-    continental_file
-  )
-  
-  if (nlyr(continental) < 4) {
-    stop(
-      "Continental raster must contain at least 4 bands."
-    )
-  }
-  
-  # ----------------------------------------------------------
-  # An. gambiae = Band 4
-  # ----------------------------------------------------------
-  
-  continental_gambiae <- continental[[4]]
-  
-  names(
-    continental_gambiae
-  ) <- "continental_gambiae"
-  
-  # ----------------------------------------------------------
-  # Align to environmental modelling grid
-  # ----------------------------------------------------------
-  
-  continental_gambiae <- resample(
-    continental_gambiae,
-    env[[1]],
-    method = "bilinear"
-  )
-  
-  # ----------------------------------------------------------
-  # Ensure positive finite values for log transformation
-  # ----------------------------------------------------------
-  
-  continental_gambiae <- ifel(
-    continental_gambiae > 0 &
-      is.finite(continental_gambiae),
-    continental_gambiae,
-    1e-6
-  )
-  
-  # ----------------------------------------------------------
-  # Log-transform for use as M3 offset
-  # ----------------------------------------------------------
-  
-  log_offset <- log(
-    continental_gambiae
-  )
-  
-  names(
-    log_offset
-  ) <- "log_continental_offset"
-  
-  # ----------------------------------------------------------
-  # Extract offset at observation locations
-  # ----------------------------------------------------------
-  
-  offset_values <- terra::extract(
-    log_offset,
-    pts,
-    ID = FALSE
-  )[[1]]
-  
-  model_data <- model_data |>
-    select(
-      -any_of("log_continental_offset")
-    ) |>
-    left_join(
-      tibble(
-        observation_id = valid$observation_id,
-        log_continental_offset = offset_values
-      ),
-      by = "observation_id"
-    )
-  
-  # ----------------------------------------------------------
-  # Save continental Gambiae surfaces
-  # ----------------------------------------------------------
-  
-  writeRaster(
-    continental_gambiae,
-    "data/processed/continental_gambiae_1km.tif",
-    overwrite = TRUE
-  )
-  
-  writeRaster(
-    log_offset,
-    "data/processed/log_continental_offset_1km.tif",
-    overwrite = TRUE
-  )
-}
+# make plot limits for diverging palette around zero
+plot_limits <- max(
+  abs(values(mess_uganda)),
+  na.rm = TRUE
+) * c(-1, 1)
 
-# ------------------------------------------------------------
-# 8. SAMPLING INTENSITY AND TEMPORAL TREND
-# ------------------------------------------------------------
 
-model_data <- model_data |>
-  mutate(
-    log_effort = log1p(effort),
-    year_c = year - mean(
-      year,
-      na.rm = TRUE
-    )
-  )
+# plot with palette that diverges around zero
+plot_mess_local <- ggplot() +
+  geom_spatraster(
+    data = mess_uganda
+  ) +
+  scale_fill_distiller(
+    type = "div",
+    palette = "RdBu",
+    direction = 1,
+    limit = plot_limits
+  ) +
+  theme_void() +
+  labs(fill = "Multivariate\nEnvironmental\nSimilarity")
 
-# ------------------------------------------------------------
-# 9. COVARIATE AVAILABILITY SUMMARY
-# ------------------------------------------------------------
+plot_mess_local
 
-qa <- model_data |>
-  summarise(
-    observations = n(),
-    
-    valid_gps =
-      sum(
-        is.finite(longitude) &
-          is.finite(latitude)
-      ),
-    
-    tmax =
-      sum(!is.na(tmax)),
-    
-    tmin =
-      sum(!is.na(tmin)),
-    
-    precip =
-      sum(!is.na(precip)),
-    
-    travel =
-      sum(!is.na(travel)),
-    
-    log_effort =
-      sum(!is.na(log_effort)),
-    
-    year_c =
-      sum(!is.na(year_c)),
-    
-    continental_offset =
-      sum(!is.na(log_continental_offset))
-  )
 
-print(qa)
+# make mask of this, such that anything < 0 is NA,
+# i.e. dissimilar, and >= 0 is 1, i.e., similar.
+mess_mask <- mess_uganda
 
-# ------------------------------------------------------------
-# 10. SAVE MODELLING DATA AND RASTERS
-# ------------------------------------------------------------
+mvals <- values(mess_uganda)
 
-write_csv(
-  model_data,
-  out,
-  na = ""
-)
+mess_mask[which(mvals < 0)] <- NA
+mess_mask[which(mvals >= 0)] <- 1
 
-writeRaster(
-  env,
-  "data/processed/environment_1km.tif",
-  overwrite = TRUE
-)
+mess_mask <- mask(mess_mask, uganda_shp)
 
-message(
-  "Saved modelling dataset: ",
-  out
-)
+points1<- uganda_points |>
+  as_tibble() |>
+  dplyr::rename(longitude=x,latitude=y)
+# check which points fall inside the mask
 
-# ------------------------------------------------------------
-# 11. M3 READINESS CHECK
-# ------------------------------------------------------------
 
-n_continental <- sum(
-  !is.na(
-    model_data$log_continental_offset
-  )
-)
+points_inside<-sdmtools::inside_mask(points1,mess_mask)
 
-if (n_continental == 0) {
-  
-  warning(
-    "M3 is NOT ready: no continental An. gambiae offset ",
-    "values were extracted. Supply ",
-    continental_file,
-    " and rerun R/02_prepare_covariates.R."
-  )
-  
-} else {
-  
-  message(
-    "M3 An. gambiae continental offset prepared for ",
-    n_continental,
-    " observations."
-  )
-}
+# Difference between points1 and points_inside are the points that fall outside the mask  
 
-# ============================================================
-# END OF SCRIPT
-# ============================================================
+y=setdiff(points1,points_inside)
+ 
+
+
+# look at area of country we have represented
+plot(mess_mask)
+plot(uganda_shp, add = TRUE)
+points(uganda_points)
+
+# check the covariates we have represented
+masked_covs <- mask(covs_uganda, mess_mask)
+plot(masked_covs)
+
+
