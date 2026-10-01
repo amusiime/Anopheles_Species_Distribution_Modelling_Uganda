@@ -3,6 +3,8 @@ title: "SDM Steps"
 author: "Alex Musiime"
 date: "2025-09-13"
 output:
+  pdf_document:
+    latex_engine: xelatex
   html_document: default
   html_pdf: default
 ---
