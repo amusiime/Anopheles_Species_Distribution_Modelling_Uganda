@@ -1,0 +1,14 @@
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+*.Rproj.user/
+outputs/models/*.rds
+outputs/predictions/*.tif
+outputs/tables/*.csv
+# Raw household-level surveillance data should remain private by default.
+data/raw/*.csv
+# Add the continental prediction raster locally; do not publish without permission.
+data/raw/continental/
+.data/
+*.gpkg
