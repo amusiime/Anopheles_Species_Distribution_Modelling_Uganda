@@ -246,7 +246,7 @@ x <- x |>
 # ------------------------------------------------------------
 
 clean <- x |>
-  select(
+  dplyr::select(
     observation_id, any_of("event"), event_date, year, month_number, month,
     region, district, sub_county, health_facility, site_code, site_id,
     household_id, site_year_id, site_month_id, location_id,

@@ -1,4 +1,4 @@
-# ============================================================
+# 05_diagnostics.R
 # 04_diagnostics.R
 # DIAGNOSTICS FOR ALL THREE MODELS
 # UGANDA VECTOR ABUNDANCE MODELLING
