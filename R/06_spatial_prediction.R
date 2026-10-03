@@ -1,368 +1,272 @@
 
-# ============================================================
-# NATIONAL SPATIAL PREDICTION - AN. GAMBIAE, UGANDA
-# Model M1: Negative Binomial
-# ============================================================
+# 06_spatial_prediction.R
+# National spatial predictions: Anopheles gambiae
+# M1: Combined environmental model
+# M2: Monthly environmental model
 
-# 1. PACKAGES ------------------------------------------------
+suppressPackageStartupMessages({
+  library(terra)
+})
 
-library(tidyverse)
-library(terra)
-library(MASS)
-library(sf)
-library(ggplot2)
-library(viridis)
-library(scales)
+# ------------------------------------------------------------
+# 1. LOAD MODELS AND CREATE OUTPUT DIRECTORY
+# ------------------------------------------------------------
 
-# 2. FILE PATHS ----------------------------------------------
+models <- readRDS("outputs/models/abundance_models.rds")
 
-data_file <- "data/processed/model_data_observations.csv"
-env_file <- "data/processed/environment_1km.tif"
-travel_file <- "data/processed/travel_accessibility_1km.tif"
-district_file <- "data/raw/Uganda Districts-wgs84.shp"
+M1 <- models$M1
+M2 <- models$M2
 
-dir.create("outputs/models", recursive = TRUE, showWarnings = FALSE)
-dir.create("outputs/predictions", recursive = TRUE, showWarnings = FALSE)
-dir.create("outputs/figures", recursive = TRUE, showWarnings = FALSE)
-
-# 3. PREPARE MODELLING DATA ----------------------------------
-
-d <- read_csv(data_file, show_col_types = FALSE)
-
-model_data <- d %>%
-  drop_na(
-    an_gambiae_total,
-    cell_number,
-    tmin, tmax, precip, travel
-  ) %>%
-  group_by(cell_number) %>%
-  summarise(
-    an_gambiae_total = sum(an_gambiae_total),
-    effort = n(),
-    tmin = mean(tmin),
-    tmax = mean(tmax),
-    precip = mean(precip),
-    travel = mean(travel),
-    .groups = "drop"
-  ) %>%
-  mutate(log_effort = log(effort))
-
-write_csv(
-  model_data,
-  "data/processed/model_data_cell_totals.csv"
+dir.create(
+  "outputs/predictions",
+  recursive = TRUE,
+  showWarnings = FALSE
 )
 
-# 4. FIT NEGATIVE BINOMIAL MODEL M1 --------------------------
+# Reference sampling effort = 1
+prepare_effort <- function(template) {
+  x <- terra::init(template, 0)
+  names(x) <- "log_effort"
+  x
+}
 
-M1 <- MASS::glm.nb(
-  an_gambiae_total ~
-    tmin + tmax + precip + travel +
-    offset(log_effort),
-  data = model_data
+# ------------------------------------------------------------
+# 2. LOAD AND ALIGN TRAVEL ACCESSIBILITY
+# ------------------------------------------------------------
+
+travel_source <- rast(
+  "data/processed/travel_accessibility_1km.tif"
 )
 
-print(summary(M1))
+# ------------------------------------------------------------
+# 3. M1: COMBINED ENVIRONMENTAL PREDICTION
+# ------------------------------------------------------------
 
-saveRDS(M1, "outputs/models/M1.rds")
+cat("\nPreparing M1 annual prediction...\n")
 
-# 5. PREPARE ENVIRONMENTAL RASTERS ---------------------------
+env <- rast(
+  "data/processed/environment_1km.tif"
+)
 
-env <- rast(env_file)
+names(env) <- tolower(names(env))
 
-# BIOCLIM bands: 6, 5 and 12
+required_bio <- c("bio1", "bio5", "bio12")
 
-env <- env[[c(3, 2, 4)]]
+if (!all(required_bio %in% names(env))) {
+  stop(
+    "M1 requires environmental layers: ",
+    paste(required_bio, collapse = ", ")
+  )
+}
 
-names(env) <- c("tmin", "tmax", "precip")
+env <- env[[required_bio]]
 
-template <- env[[1]]
-
-# 6. PREPARE TRAVEL ACCESSIBILITY ----------------------------
-
-travel <- rast(travel_file)
-
-travel <- project(
-  travel,
-  template,
+# Align travel raster with environmental raster
+travel_M1 <- project(
+  travel_source,
+  env[[1]],
   method = "bilinear"
 )
 
-names(travel) <- "travel"
+names(travel_M1) <- "travel"
 
-# 7. REFERENCE SAMPLING EFFORT -------------------------------
+# Create reference sampling effort
+effort_M1 <- prepare_effort(env[[1]])
 
-# log(1) = 0
-log_effort <- init(template, 0)
-
-names(log_effort) <- "log_effort"
-
-# 8. BUILD PREDICTION STACK ----------------------------------
-
-predictors <- c(
+# Combine predictors in model order
+predictors_M1 <- c(
   env,
-  travel,
-  log_effort
+  travel_M1,
+  effort_M1
 )
 
-names(predictors) <- c(
-  "tmin",
-  "tmax",
-  "precip",
-  "travel",
-  "log_effort"
+# Check predictor names
+required_M1 <- c(
+  "bio1", "bio5", "bio12",
+  "travel", "log_effort"
 )
 
-# 9. GENERATE NATIONAL SPATIAL PREDICTION --------------------
+if (!identical(names(predictors_M1), required_M1)) {
+  stop("M1 prediction layers do not match model predictors.")
+}
 
-prediction <- terra::predict(
-  predictors,
+# Generate annual prediction
+prediction_M1 <- terra::predict(
+  predictors_M1,
   M1,
   type = "response",
   na.rm = TRUE,
-  filename = "outputs/predictions/an_gambiae_M1_1km.tif",
-  overwrite = TRUE
+  filename = "outputs/predictions/M1_annual_1km.tif",
+  overwrite = TRUE,
+  wopt = list(gdal = "COMPRESS=LZW")
 )
 
-names(prediction) <- "predicted_abundance"
+names(prediction_M1) <- "an_gambiae_predicted"
 
+cat("M1 annual prediction completed.\n")
 
-# 10. PREPARE MAP DATA ---------------------------------------
+# ------------------------------------------------------------
+# 4. M2: MONTHLY CLIMATE PREDICTIONS
+# ------------------------------------------------------------
 
-pred_df <- as.data.frame(
-  prediction,
-  xy = TRUE,
-  na.rm = TRUE
-)
+monthly_file <- "data/processed/monthly_climate_uganda_1km.tif"
 
-names(pred_df) <- c(
-  "longitude",
-  "latitude",
-  "predicted_abundance"
-)
-
-# Load Uganda district boundaries
-districts <- st_read(district_file, quiet = TRUE) %>%
-  st_transform(4326)
-
-# 11. CREATE GGPLOT MAP --------------------------------------
-
-upper_limit <- as.numeric(
-  quantile(
-    pred_df$predicted_abundance,
-    0.99,
-    na.rm = TRUE
-  )
-)
-
-p <- ggplot() +
-  geom_raster(
-    data = pred_df,
-    aes(longitude, latitude, fill = predicted_abundance)
-  ) +
-  geom_sf(
-    data = districts,
-    fill = NA,
-    colour = "grey65",
-    linewidth = 0.15
-  ) +
-  scale_fill_viridis_c(
-    option = "magma",
-    trans = "sqrt",
-    limits = c(0, upper_limit),
-    oob = scales::squish,
-    name = "Predicted\nabundance"
-  ) +
-  coord_sf(
-    xlim = c(29.5, 35.1),
-    ylim = c(-1.5, 4.3),
-    expand = FALSE
-  ) +
-  labs(
-    title = expression(
-      paste("Predicted ", italic("Anopheles gambiae"), " abundance")
-    ),
-    subtitle = "Uganda | Negative binomial model M1",
-    x = "Longitude",
-    y = "Latitude",
-    caption = "Predictions at reference sampling effort of one observation."
-  ) +
-  theme_minimal(base_size = 11) +
-  theme(
-    plot.title = element_text(face = "bold", size = 15),
-    plot.subtitle = element_text(size = 10),
-    axis.title = element_text(face = "bold"),
-    legend.position = "right",
-    legend.title = element_text(face = "bold"),
-    panel.grid = element_line(colour = "grey90", linewidth = 0.2)
-  )
-
-print(p)
-
-
-# 1. PREPARE MONTHLY MODELLING DATA
-# 1. Extract month from sampling date
-d <- d %>%
-  mutate(
-    date = lubridate::ymd(event_date),
-    month = lubridate::month(date)
-  )
-model_data_month <- d %>%
-  tidyr::drop_na(
-    an_gambiae_total,
-    cell_number,
-    month,
-    tmin, tmax, precip, travel
-  ) %>%
-  group_by(cell_number, month) %>%
-  summarise(
-    an_gambiae_total = sum(an_gambiae_total),
-    effort = n(),
-    tmin = mean(tmin),
-    tmax = mean(tmax),
-    precip = mean(precip),
-    travel = mean(travel),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    month = factor(month, levels = 1:12),
-    log_effort = log(effort)
-  )
-
-readr::write_csv(
-  model_data_month,
-  "data/processed/model_data_month_totals.csv"
-)
-
-M1_month <- MASS::glm.nb(
-  an_gambiae_total ~
-    tmin + tmax + precip + travel +
-    month +
-    offset(log_effort),
-  data = model_data_month
-)
-
-summary(M1_month)
-
-saveRDS(
-  M1_month,
-  "outputs/models/M1_month.rds"
-)
-
-
-# 5. PREPARE RASTERS -----------------------------------------
-
-env <- rast(env_file)[[c(3, 2, 4)]]
-names(env) <- c("tmin", "tmax", "precip")
-
-template <- env[[1]]
-
-travel <- project(
-  rast(travel_file),
-  template,
-  method = "bilinear"
-)
-names(travel) <- "travel"
-
-log_effort <- init(template, 0)
-names(log_effort) <- "log_effort"
-
-
-
-
-# 6. GENERATE MONTHLY PREDICTIONS ----------------------------
-
-month_names <- month.name
-pred_data <- list()
-
-for (m in 1:12) {
+if (!file.exists(monthly_file)) {
   
-  predictors <- c(env, travel, init(template, m), log_effort)
-  names(predictors) <- c(
-    "tmin", "tmax", "precip", "travel", "month", "log_effort"
+  cat("\nM2 skipped: monthly climate raster not found.\n")
+  
+} else {
+  
+  monthly_env <- rast(monthly_file)
+  
+  names(monthly_env) <- tolower(names(monthly_env))
+  
+  # Expected 36 monthly climate layers
+  required_monthly <- unlist(
+    lapply(
+      tolower(month.abb),
+      function(month) {
+        c(
+          paste0("tmin_", month),
+          paste0("tmax_", month),
+          paste0("precip_", month)
+        )
+      }
+    )
   )
   
-  prediction <- terra::predict(
-    predictors, M1_month,
-    fun = function(model, data, ...) {
-      data$month <- factor(
-        as.character(as.integer(data$month)),
-        levels = model$xlevels[["month"]]
+  missing_layers <- setdiff(
+    required_monthly,
+    names(monthly_env)
+  )
+  
+  if (length(missing_layers) > 0) {
+    
+    cat(
+      "\nM2 skipped: monthly climate raster is incomplete.\n"
+    )
+    
+    cat(
+      "Missing layers:",
+      paste(missing_layers, collapse = ", "),
+      "\n"
+    )
+    
+  } else {
+    
+    cat("\nPreparing M2 monthly predictions...\n")
+    
+    # Align travel raster with monthly climate raster
+    travel_M2 <- project(
+      travel_source,
+      monthly_env[[1]],
+      method = "bilinear"
+    )
+    
+    names(travel_M2) <- "travel"
+    
+    effort_M2 <- prepare_effort(monthly_env[[1]])
+    
+    monthly_predictions <- vector("list", 12)
+    
+    for (m in seq_len(12)) {
+      
+      month <- tolower(month.abb[m])
+      
+      cat("Predicting:", month.abb[m], "\n")
+      
+      layers <- c(
+        paste0("tmin_", month),
+        paste0("tmax_", month),
+        paste0("precip_", month)
       )
-      predict(model, newdata = data, type = "response")
-    },
-    na.rm = TRUE,
-    filename = sprintf(
-      "outputs/predictions/an_gambiae_M1_%s.tif",
-      tolower(month_names[m])
-    ),
-    overwrite = TRUE
-  )
-  
-  pred_df <- as.data.frame(prediction, xy = TRUE, na.rm = TRUE)
-  names(pred_df) <- c("longitude", "latitude", "predicted_abundance")
-  pred_df$month <- month_names[m]
-  pred_data[[m]] <- pred_df
+      
+      env_month <- monthly_env[[layers]]
+      
+      names(env_month) <- c(
+        "tmin",
+        "tmax",
+        "precip"
+      )
+      
+      predictors_M2 <- c(
+        env_month,
+        travel_M2,
+        effort_M2
+      )
+      
+      # Check predictor names
+      required_M2 <- c(
+        "tmin", "tmax", "precip",
+        "travel", "log_effort"
+      )
+      
+      if (!identical(names(predictors_M2), required_M2)) {
+        stop(
+          "M2 predictor mismatch for ",
+          month.abb[m]
+        )
+      }
+      
+      monthly_predictions[[m]] <- terra::predict(
+        predictors_M2,
+        M2,
+        type = "response",
+        na.rm = TRUE,
+        filename = paste0(
+          "outputs/predictions/M2_",
+          month.abb[m],
+          "_1km.tif"
+        ),
+        overwrite = TRUE,
+        wopt = list(gdal = "COMPRESS=LZW")
+      )
+      
+      names(monthly_predictions[[m]]) <- month.abb[m]
+    }
+    
+    # Combine all 12 monthly predictions
+    prediction_M2 <- do.call(
+      c,
+      monthly_predictions
+    )
+    
+    writeRaster(
+      prediction_M2,
+      "outputs/predictions/M2_monthly_1km.tif",
+      overwrite = TRUE,
+      wopt = list(gdal = "COMPRESS=LZW")
+    )
+    
+    cat("M2 monthly predictions completed.\n")
+  }
 }
 
-all_pred_df <- bind_rows(pred_data)
+# ------------------------------------------------------------
+# 5. REPORT OUTPUTS
+# ------------------------------------------------------------
 
+cat("\nSpatial prediction script completed.\n")
 
-# 7. PREPARE DISTRICTS AND MAP SCALE -------------------------
-
-districts <- st_read(district_file, quiet = TRUE) %>%
-  st_transform(4326)
-
-upper_limit <- quantile(
-  all_pred_df$predicted_abundance, 0.99, na.rm = TRUE
+cat(
+  "\nM1 output:",
+  "outputs/predictions/M1_annual_1km.tif\n"
 )
 
-
-# 8. CREATE 12 MONTHLY MAPS ----------------------------------
-
-library(patchwork)
-library(scales)
-
-monthly_maps <- list()
-
-for (m in month_names) {
-  
-  monthly_maps[[m]] <- ggplot(
-    filter(all_pred_df, month == m)
-  ) +
-    geom_raster(aes(longitude, latitude, fill = predicted_abundance)) +
-    
-    scale_fill_viridis_c(
-      option = "magma", trans = "sqrt",
-      limits = c(0, upper_limit),
-      oob = scales::squish,
-      name = "Predicted\nabundance"
-    ) +
-    theme_void()}
+if (file.exists(
+  "outputs/predictions/M2_monthly_1km.tif"
+)) {
+  cat(
+    "M2 output:",
+    "outputs/predictions/M2_monthly_1km.tif\n"
+  )
+} else {
+  cat("M2 output: Not generated (monthly climate data unavailable).\n")
+}
 
 
-# 9. COMBINE, DISPLAY AND SAVE ----------
 
-monthly_panel <- wrap_plots(
-  monthly_maps, ncol = 4, guides = "collect"
-) +
-  plot_annotation(
-    title = expression(
-      paste("Monthly Predicted ", italic("Anopheles gambiae"), " Abundance")
-    )
-  ) &
-  theme(legend.position = "right")
 
-print(monthly_panel)
-
-ggsave(
-  "outputs/figures/an_gambiae_M1_12_monthly_maps.png",
-  monthly_panel, width = 16, height = 12, dpi = 600, bg = "white"
-)
-
-ggsave(
-  "outputs/figures/an_gambiae_M1_12_monthly_maps.pdf",
-  monthly_panel, width = 16, height = 12
-)
 
 
 
