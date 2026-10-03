@@ -30,9 +30,6 @@ expected_layers <- c(
   paste0("precip_", month.abb)
 )
 
-if (!all(expected_layers %in% names(monthly_env))) {
-  stop("Monthly climate raster has missing or incorrectly named layers.")
-}
 
 # Align supporting rasters with template
 travel <- project(travel, template, method = "bilinear")
@@ -65,6 +62,10 @@ pts <- vect(
   crs = "EPSG:4326"
 )
 
+
+#crs() returns the Coordinate Reference System 
+#crds() extracts the actual coordinate values (X and Y) of spatial points
+
 pts <- project(pts, crs(template))
 
 # Assign raster grid cells
@@ -76,7 +77,6 @@ d <- d %>%
 
 pts <- pts[!is.na(d$cell_number), ]
 
-cat("Valid observations:", nrow(d), "\n")
 
 # 4. PREPARE COMBINED CLIMATE DATA ---------------------------
 
@@ -156,15 +156,6 @@ write_csv(
   na = ""
 )
 
-# 6. OUTPUT SUMMARY ------------------------------------------
-
-cat("\nModel data preparation completed.\n")
-cat("Combined climate observations:", nrow(combined_data), "\n")
-cat("Monthly climate observations:", nrow(monthly_data), "\n")
-
-cat("\nSaved files:\n")
-cat("- model_data_environment.csv\n")
-cat("- model_data_monthly_environment.csv\n")
 
 
 

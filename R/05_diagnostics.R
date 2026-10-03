@@ -6,8 +6,8 @@ sim_M1 <- simulateResiduals(M1, n = 1000)
 sim_M2 <- simulateResiduals(M2, n = 1000)
 
 # Diagnostic plots
-plot(sim_M1, main = "M1: Combined Environmental Model")
-plot(sim_M2, main = "M2: Monthly Environmental Model")
+#plot(sim_M1, main = "M1: Combined Environmental Model")
+#plot(sim_M2, main = "M2: Monthly Environmental Model")
 
 # Diagnostic tests
 diagnose_model <- function(model, residuals) {

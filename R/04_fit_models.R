@@ -58,8 +58,7 @@ saveRDS(
 
 write_csv(model_comparison, "outputs/tables/model_comparison.csv")
 
-print(model_comparison)
-cat("\nModel fitting completed.\n")
+
 
 
 

@@ -42,8 +42,6 @@ travel_source <- rast(
 # 3. M1: COMBINED ENVIRONMENTAL PREDICTION
 # ------------------------------------------------------------
 
-cat("\nPreparing M1 annual prediction...\n")
-
 env <- rast(
   "data/processed/environment_1km.tif"
 )
@@ -86,9 +84,6 @@ required_M1 <- c(
   "travel", "log_effort"
 )
 
-if (!identical(names(predictors_M1), required_M1)) {
-  stop("M1 prediction layers do not match model predictors.")
-}
 
 # Generate annual prediction
 prediction_M1 <- terra::predict(
@@ -103,166 +98,100 @@ prediction_M1 <- terra::predict(
 
 names(prediction_M1) <- "an_gambiae_predicted"
 
-cat("M1 annual prediction completed.\n")
 
 # ------------------------------------------------------------
 # 4. M2: MONTHLY CLIMATE PREDICTIONS
 # ------------------------------------------------------------
+# ------------------------------------------------------------
+# 1. LOAD MONTHLY CLIMATE DATA
+# ------------------------------------------------------------
+
+# ------------------------------------------------------------
+# 1. LOAD MONTHLY CLIMATE DATA
+# ------------------------------------------------------------
 
 monthly_file <- "data/processed/monthly_climate_uganda_1km.tif"
 
-if (!file.exists(monthly_file)) {
-  
-  cat("\nM2 skipped: monthly climate raster not found.\n")
-  
-} else {
+if (file.exists(monthly_file)) {
   
   monthly_env <- rast(monthly_file)
-  
   names(monthly_env) <- tolower(names(monthly_env))
   
-  # Expected 36 monthly climate layers
-  required_monthly <- unlist(
-    lapply(
-      tolower(month.abb),
-      function(month) {
-        c(
-          paste0("tmin_", month),
-          paste0("tmax_", month),
-          paste0("precip_", month)
-        )
-      }
-    )
+  required_monthly <- unlist(lapply(tolower(month.abb), function(m) {
+    paste0(c("tmin_", "tmax_", "precip_"), m)
+  }))
+  
+  monthly_env <- monthly_env[[required_monthly]]
+}
+  
+  # ----------------------------------------------------------
+  #PREPARE PREDICTORS
+  # ----------------------------------------------------------
+  
+  travel_M2 <- project(
+    travel_source,
+    monthly_env[[1]],
+    method = "bilinear"
   )
   
-  missing_layers <- setdiff(
-    required_monthly,
-    names(monthly_env)
-  )
+  names(travel_M2) <- "travel"
   
-  if (length(missing_layers) > 0) {
+  effort_M2 <- prepare_effort(monthly_env[[1]])
+  
+  monthly_predictions <- vector("list", 12)
+  
+  
+  # ----------------------------------------------------------
+  # 3. GENERATE MONTHLY PREDICTIONS
+  # ----------------------------------------------------------
+  
+  for (m in seq_len(12)) {
     
-    cat(
-      "\nM2 skipped: monthly climate raster is incomplete.\n"
-    )
+    month <- tolower(month.abb[m])
     
-    cat(
-      "Missing layers:",
-      paste(missing_layers, collapse = ", "),
-      "\n"
-    )
+    layers <- paste0(c("tmin_", "tmax_", "precip_"), month)
     
-  } else {
+    env_month <- monthly_env[[layers]]
+    names(env_month) <- c("tmin", "tmax", "precip")
     
-    cat("\nPreparing M2 monthly predictions...\n")
+    predictors_M2 <- c(env_month, travel_M2, effort_M2)
     
-    # Align travel raster with monthly climate raster
-    travel_M2 <- project(
-      travel_source,
-      monthly_env[[1]],
-      method = "bilinear"
-    )
-    
-    names(travel_M2) <- "travel"
-    
-    effort_M2 <- prepare_effort(monthly_env[[1]])
-    
-    monthly_predictions <- vector("list", 12)
-    
-    for (m in seq_len(12)) {
-      
-      month <- tolower(month.abb[m])
-      
-      cat("Predicting:", month.abb[m], "\n")
-      
-      layers <- c(
-        paste0("tmin_", month),
-        paste0("tmax_", month),
-        paste0("precip_", month)
-      )
-      
-      env_month <- monthly_env[[layers]]
-      
-      names(env_month) <- c(
-        "tmin",
-        "tmax",
-        "precip"
-      )
-      
-      predictors_M2 <- c(
-        env_month,
-        travel_M2,
-        effort_M2
-      )
-      
-      # Check predictor names
-      required_M2 <- c(
-        "tmin", "tmax", "precip",
-        "travel", "log_effort"
-      )
-      
-      if (!identical(names(predictors_M2), required_M2)) {
-        stop(
-          "M2 predictor mismatch for ",
-          month.abb[m]
-        )
-      }
-      
-      monthly_predictions[[m]] <- terra::predict(
-        predictors_M2,
-        M2,
-        type = "response",
-        na.rm = TRUE,
-        filename = paste0(
-          "outputs/predictions/M2_",
-          month.abb[m],
-          "_1km.tif"
-        ),
-        overwrite = TRUE,
-        wopt = list(gdal = "COMPRESS=LZW")
-      )
-      
-      names(monthly_predictions[[m]]) <- month.abb[m]
-    }
-    
-    # Combine all 12 monthly predictions
-    prediction_M2 <- do.call(
-      c,
-      monthly_predictions
-    )
-    
-    writeRaster(
-      prediction_M2,
-      "outputs/predictions/M2_monthly_1km.tif",
+    monthly_predictions[[m]] <- terra::predict(
+      predictors_M2,
+      M2,
+      type = "response",
+      na.rm = TRUE,
+      filename = paste0(
+        "outputs/predictions/M2_",
+        month.abb[m],
+        "_1km.tif"
+      ),
       overwrite = TRUE,
       wopt = list(gdal = "COMPRESS=LZW")
     )
     
-    cat("M2 monthly predictions completed.\n")
+    names(monthly_predictions[[m]]) <- month.abb[m]
   }
-}
+  
 
-# ------------------------------------------------------------
-# 5. REPORT OUTPUTS
-# ------------------------------------------------------------
-
-cat("\nSpatial prediction script completed.\n")
-
-cat(
-  "\nM1 output:",
-  "outputs/predictions/M1_annual_1km.tif\n"
-)
-
-if (file.exists(
-  "outputs/predictions/M2_monthly_1km.tif"
-)) {
-  cat(
-    "M2 output:",
-    "outputs/predictions/M2_monthly_1km.tif\n"
+  # ----------------------------------------------------------
+  # SAVE COMBINED MONTHLY PREDICTIONS
+  # ----------------------------------------------------------
+  
+  prediction_M2 <- do.call(c, monthly_predictions)
+  
+  writeRaster(
+    prediction_M2,
+    "outputs/predictions/M2_monthly_1km.tif",
+    overwrite = TRUE,
+    wopt = list(gdal = "COMPRESS=LZW")
   )
-} else {
-  cat("M2 output: Not generated (monthly climate data unavailable).\n")
-}
+  
+
+  
+  
+  
+
 
 
 

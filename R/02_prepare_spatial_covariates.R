@@ -114,16 +114,19 @@ travel_uga <- mask(
   project(uga, crs(travel_raw))
 )
 
+# Project and align with climatic var
 travel <- project(
   travel_uga,
   monthly_climate[[1]],
   method = "bilinear"
 )
 
+#global() calculates 
+#a statistical summary across all raster cells
+
 max_travel <- global(travel, "max", na.rm = TRUE)[1, 1]
 
-if (is.na(max_travel) || max_travel <= 0)
-  stop("Invalid maximum travel time.")
+# clamp Normalise travel time
 
 travel <- clamp(1 - travel / max_travel, 0, 1)
 names(travel) <- "travel"
@@ -136,19 +139,11 @@ writeRaster(
 
 # 6. CONTINENTAL AN. GAMBIAE OFFSET --------------------------
 
-if (!file.exists(continental_file))
-  stop("Continental prediction raster not found.")
 
 continental <- project(
   rast(continental_file)[[4]],
   monthly_climate[[1]],
   method = "bilinear"
-)
-
-continental <- ifel(
-  is.na(continental) | continental <= 0,
-  1e-6,
-  continental
 )
 
 names(continental) <- "continental_gambiae"
