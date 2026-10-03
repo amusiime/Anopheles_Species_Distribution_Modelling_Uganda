@@ -1,9 +1,8 @@
-
 # run_all.R: Uganda vector abundance modelling pipeline
 
 scripts <- c(
   "R/01_clean_data.R",
-  "R/01b_data_QA.R",
+  #"R/01b_data_QA.R",
   "R/02_prepare_spatial_covariates.R",
   "R/03_prepare_model_data.R",
   "R/04_fit_models.R",
@@ -22,5 +21,3 @@ for (script in scripts) {
 }
 
 cat("\nPipeline completed successfully.\n")
-
-
