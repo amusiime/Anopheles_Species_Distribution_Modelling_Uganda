@@ -10,5 +10,5 @@ outputs/tables/*.csv
 data/raw/*.csv
 # Add the continental prediction raster locally; do not publish without permission.
 data/raw/continental/
-.data/
+data/
 *.gpkg
