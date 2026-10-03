@@ -1,70 +1,29 @@
 
-
 # 02_prepare_spatial_covariates.R
+# Prepare spatial covariates for Anopheles gambiae abundance modelling
 
 options(timeout = 600)
 
 suppressPackageStartupMessages({
-  library(tidyverse)
   library(terra)
   library(geodata)
 })
 
-# 1. FILES AND DIRECTORIES ----------------------------------
-
-input <- "data/processed/ento_clean.csv"
-continental_source <- "data/raw/continental/uganda_preds_p.tif"
+# 1. SETTINGS ------------------------------------------------
 
 out_dir <- "data/processed"
-bioclim_dir <- "data/raw/bioclim"
+climate_dir <- "data/raw/worldclim_monthly"
 cache <- "data/raw/.geodata"
+continental_file <- "data/raw/continental/uganda_preds_p.tif"
 
 dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create(bioclim_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(climate_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(cache, recursive = TRUE, showWarnings = FALSE)
 
 uganda_extent <- ext(29.5, 35.1, -1.5, 4.3)
+months <- month.abb
 
-# 2. READ ENTOMOLOGICAL DATA -------------------------------
-
-d <- read_csv(input, show_col_types = FALSE) %>%
-  mutate(
-    longitude = as.numeric(longitude),
-    latitude = as.numeric(latitude),
-    year = as.numeric(year)
-  )
-
-cat("Input observations:", nrow(d), "\n")
-
-# 3. PREPARE BIOCLIM DATA -----------------------------------
-
-bio <- geodata::worldclim_country(
-  country = "Uganda",
-  var = "bio",
-  res = 0.5,
-  version = "2.1",
-  path = bioclim_dir
-)
-
-env <- crop(
-  bio[[c(1, 5, 6, 12, 13, 14)]],
-  uganda_extent
-)
-
-names(env) <- c(
-  "bio1", "bio5", "bio6",
-  "bio12", "bio13", "bio14"
-)
-
-writeRaster(
-  env,
-  file.path(out_dir, "environment_1km.tif"),
-  overwrite = TRUE
-)
-
-cat("BIOCLIM raster prepared.\n")
-
-# 4. PREPARE TRAVEL ACCESSIBILITY ---------------------------
+# 2. UGANDA BOUNDARY -----------------------------------------
 
 uga <- geodata::gadm(
   country = "UGA",
@@ -72,36 +31,101 @@ uga <- geodata::gadm(
   path = cache
 )
 
+# 3. MONTHLY CLIMATE VARIABLES -------------------------------
+
+tmin <- geodata::worldclim_country(
+  "Uganda", "tmin", res = 0.5, version = "2.1",
+  path = climate_dir
+) / 10
+
+tmax <- geodata::worldclim_country(
+  "Uganda", "tmax", res = 0.5, version = "2.1",
+  path = climate_dir
+) / 10
+
+precip <- geodata::worldclim_country(
+  "Uganda", "prec", res = 0.5, version = "2.1",
+  path = climate_dir
+)
+
+# Crop and name monthly layers
+tmin <- crop(tmin, uganda_extent)
+tmax <- crop(tmax, uganda_extent)
+precip <- crop(precip, uganda_extent)
+
+names(tmin) <- paste0("tmin_", months)
+names(tmax) <- paste0("tmax_", months)
+names(precip) <- paste0("precip_", months)
+
+monthly_climate <- mask(
+  c(tmin, tmax, precip),
+  project(uga, crs(tmin))
+)
+
+writeRaster(
+  monthly_climate,
+  file.path(out_dir, "monthly_climate_uganda_1km.tif"),
+  overwrite = TRUE
+)
+
+# 4. COMBINED CLIMATE VARIABLES ------------------------------
+
+bio <- geodata::worldclim_country(
+  "Uganda", "bio", res = 0.5, version = "2.1",
+  path = climate_dir
+)
+
+# BIO1 = Annual mean temperature
+# BIO5 = Maximum temperature of warmest month
+# BIO12 = Annual precipitation
+
+environment <- crop(bio[[c(1, 5, 12)]], uganda_extent)
+
+names(environment) <- c("bio1", "bio5", "bio12")
+
+environment <- mask(
+  environment,
+  project(uga, crs(environment))
+)
+
+# Align combined climate variables with monthly climate grid
+environment <- project(
+  environment,
+  monthly_climate[[1]],
+  method = "bilinear"
+)
+
+writeRaster(
+  environment,
+  file.path(out_dir, "environment_1km.tif"),
+  overwrite = TRUE
+)
+
+# 5. TRAVEL ACCESSIBILITY ------------------------------------
+
 travel_raw <- geodata::travel_time(
   to = "city",
   size = 5,
   path = cache
 )
 
-uga_travel <- project(uga, crs(travel_raw))
-
-travel_uga <- crop(travel_raw, uga_travel)
-travel_uga <- mask(travel_uga, uga_travel)
+travel_uga <- mask(
+  crop(travel_raw, project(uga, crs(travel_raw))),
+  project(uga, crs(travel_raw))
+)
 
 travel <- project(
   travel_uga,
-  env[[1]],
+  monthly_climate[[1]],
   method = "bilinear"
 )
 
-max_travel <- global(
-  travel,
-  "max",
-  na.rm = TRUE
-)[1, 1]
+max_travel <- global(travel, "max", na.rm = TRUE)[1, 1]
 
-travel <- clamp(
-  1 - (travel / max_travel),
-  lower = 0,
-  upper = 1,
-  values = TRUE
-)
+if (is.na(max_travel) || max_travel <= 0)
+  stop("Invalid maximum travel time.")
 
+travel <- clamp(1 - travel / max_travel, 0, 1)
 names(travel) <- "travel"
 
 writeRaster(
@@ -110,18 +134,19 @@ writeRaster(
   overwrite = TRUE
 )
 
-cat("Travel accessibility raster prepared.\n")
+# 6. CONTINENTAL AN. GAMBIAE OFFSET --------------------------
 
-# 5. PREPARE CONTINENTAL AN. GAMBIAE OFFSET -----------------
+if (!file.exists(continental_file))
+  stop("Continental prediction raster not found.")
 
 continental <- project(
-  rast(continental_source)[[4]],
-  env[[1]],
+  rast(continental_file)[[4]],
+  monthly_climate[[1]],
   method = "bilinear"
 )
 
 continental <- ifel(
-  !is.finite(continental) | continental <= 0,
+  is.na(continental) | continental <= 0,
   1e-6,
   continental
 )
@@ -143,64 +168,13 @@ writeRaster(
   overwrite = TRUE
 )
 
-cat("Continental offset prepared.\n")
 
-# 6. EXTRACT SPATIAL COVARIATES -----------------------------
 
-valid <- d %>%
-  filter(
-    is.finite(longitude),
-    is.finite(latitude),
-    between(longitude, 29.5, 35.1),
-    between(latitude, -1.5, 4.3)
-  )
 
-cat("Observations with valid coordinates:", nrow(valid), "\n")
 
-pts <- vect(
-  valid,
-  geom = c("longitude", "latitude"),
-  crs = "EPSG:4326"
-)
 
-pts <- project(pts, crs(env))
 
-covariates <- c(env, travel, log_offset)
 
-extracted <- terra::extract(
-  covariates,
-  pts,
-  ID = FALSE
-)
-
-valid_covariates <- bind_cols(
-  valid %>% dplyr::select(observation_id),
-  as_tibble(extracted)
-)
-
-# 7. MERGE AND PREPARE MODEL DATA ---------------------------
-
-model_data <- d %>%
-  left_join(
-    valid_covariates,
-    by = "observation_id"
-  ) %>%
-  mutate(
-    year_c = year - mean(year, na.rm = TRUE)
-  )
-
-# 8. SAVE OUTPUT --------------------------------------------
-
-write_csv(
-  model_data,
-  file.path(out_dir, "model_data_environment.csv"),
-  na = ""
-)
-
-cat("\nSpatial covariate preparation completed.\n")
-cat("Total observations:", nrow(model_data), "\n")
-cat("Observations with valid coordinates:", nrow(valid), "\n")
-cat("Output: data/processed/model_data_environment.csv\n")
 
 
 
