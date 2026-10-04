@@ -198,8 +198,8 @@ x <- x |>
     
     invalid_coordinate =
       !is.na(longitude) & !is.na(latitude) &
-      (longitude < 29 | longitude > 36 |
-         latitude < -2 | latitude > 5),
+      (longitude < 24 | longitude > 39 |
+         latitude < -4 | latitude > 8),
     
     longitude_original = longitude,
     latitude_original = latitude,

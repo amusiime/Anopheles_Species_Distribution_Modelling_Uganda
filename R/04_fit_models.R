@@ -7,7 +7,7 @@ suppressPackageStartupMessages({
 })
 
 # Load modelling data
-combined_data <- read_csv(
+annual_data <- read_csv(
   "data/processed/model_data_environment.csv",
   show_col_types = FALSE
 )
@@ -18,26 +18,46 @@ monthly_data <- read_csv(
 )
 
 # Prepare complete observations
-combined_data <- combined_data %>%
+annual_data <- combined_data %>%
   mutate(log_effort = log(effort)) %>%
-  drop_na(an_gambiae_total, bio1, bio5, bio12, travel, log_effort)
+  drop_na(
+    an_gambiae_total,
+    bio6_min_temp,
+    bio5_max_temp,
+    bio12_precip
+  )
 
 monthly_data <- monthly_data %>%
   mutate(log_effort = log(effort)) %>%
   drop_na(an_gambiae_total, tmin, tmax, precip, travel, log_effort)
 
 # Fit models
-M1 <- glm.nb(
-  an_gambiae_total ~ bio1 + bio5 + bio12 + travel +
+# Model 1: Environmental predictors only
+M1 <- MASS::glm.nb(
+  an_gambiae_total ~
+    bio6_min_temp +
+    bio5_max_temp +
+    bio12_precip +
+    travel+
     offset(log_effort),
-  data = combined_data
+  data = combined_data,
+  control = glm.control(maxit = 100)
 )
 
-M2 <- glm.nb(
-  an_gambiae_total ~ tmin + tmax + precip + travel +
+
+
+# M2: Monthly environmental predictors + travel
+M2 <- MASS::glm.nb(
+  an_gambiae_total ~
+    tmin +
+    tmax +
+    precip +
+    travel +
     offset(log_effort),
-  data = monthly_data
+  data = monthly_data,
+  control = glm.control(maxit = 100)
 )
+
 
 # Summarise model fit
 model_comparison <- tibble(

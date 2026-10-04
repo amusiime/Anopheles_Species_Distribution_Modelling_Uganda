@@ -1,7 +1,5 @@
 
-
 # 03_prepare_model_data.R
-# Extract spatial covariates and prepare model datasets
 
 suppressPackageStartupMessages({
   library(tidyverse)
@@ -10,137 +8,150 @@ suppressPackageStartupMessages({
 
 # 1. FILES ---------------------------------------------------
 
-data_file <- "data/processed/ento_clean.csv"
-out_dir <- "data/processed"
+data_dir <- "data/processed"
 
-# 2. LOAD SPATIAL COVARIATES ---------------------------------
+data_file <- file.path(data_dir, "ento_clean.csv")
 
-monthly_env <- rast(file.path(out_dir, "monthly_climate_uganda_1km.tif"))
-environment <- rast(file.path(out_dir, "environment_1km.tif"))
-travel <- rast(file.path(out_dir, "travel_accessibility_1km.tif"))
-log_offset <- rast(file.path(out_dir, "log_continental_offset_1km.tif"))
-
-# Use monthly climate raster as spatial template
-template <- monthly_env[[1]]
-
-# Check monthly climate layers
-expected_layers <- c(
-  paste0("tmin_", month.abb),
-  paste0("tmax_", month.abb),
-  paste0("precip_", month.abb)
+monthly_env <- terra::rast(
+  file.path(data_dir, "monthly_climate_uganda_1km.tif")
 )
 
+bio_env <- terra::rast(
+  file.path(data_dir, "environment_1km.tif")
+)
 
-# Align supporting rasters with template
-travel <- project(travel, template, method = "bilinear")
-log_offset <- project(log_offset, template, method = "bilinear")
+travel <- terra::rast(
+  file.path(data_dir, "travel_accessibility_1km.tif")
+)
+
+log_offset <- terra::rast(
+  file.path(data_dir, "log_continental_offset_1km.tif")
+)
+
+template <- monthly_env[[1]]
+
+
+# 2. ALIGN SPATIAL COVARIATES -------------------------------
+
+bio_env <- terra::project(
+  bio_env, template, method = "bilinear"
+)
+
+travel <- terra::project(
+  travel, template, method = "bilinear"
+)
+
+log_offset <- terra::project(
+  log_offset, template, method = "bilinear"
+)
 
 names(travel) <- "travel"
 names(log_offset) <- "log_continental_offset"
 
-# 3. CLEAN OBSERVATIONS --------------------------------------
 
-d <- read_csv(data_file, show_col_types = FALSE) %>%
+# 3. CLEAN OBSERVATIONS -------------------------------------
+
+d <- readr::read_csv(
+  data_file,
+  show_col_types = FALSE
+) %>%
   mutate(
-    longitude = as.numeric(longitude),
-    latitude = as.numeric(latitude),
     an_gambiae_total = as.numeric(an_gambiae_total),
     month_number = as.integer(month_number)
   ) %>%
   filter(
-    !is.na(longitude),
-    !is.na(latitude),
     !is.na(an_gambiae_total),
-    between(longitude, 29.5, 35.1),
-    between(latitude, -1.5, 4.3)
-  )
+    ! is.na(longitude))
 
-# Convert observations to spatial points
-pts <- vect(
+pts <- terra::vect(
   d,
   geom = c("longitude", "latitude"),
   crs = "EPSG:4326"
+) %>%
+  terra::project(terra::crs(template))
+
+cells <- terra::cellFromXY(
+  template,
+  terra::crds(pts)
 )
 
+keep <- !is.na(cells)
 
-#crs() returns the Coordinate Reference System 
-#crds() extracts the actual coordinate values (X and Y) of spatial points
-
-pts <- project(pts, crs(template))
-
-# Assign raster grid cells
-d$cell_number <- cellFromXY(template, crds(pts))
-
-# Remove observations outside raster coverage
-d <- d %>%
-  filter(!is.na(cell_number))
-
-pts <- pts[!is.na(d$cell_number), ]
+d <- d[keep, , drop = FALSE]
+pts <- pts[keep, ]
+d$cell_number <- cells[keep]
 
 
-# 4. PREPARE COMBINED CLIMATE DATA ---------------------------
+# 4. STATIC ENVIRONMENTAL DATA ------------------------------
 
-# Extract BIO1, BIO5 and BIO12 with supporting covariates
-combined_covariates <- c(
-  environment,
+static_covariates <- c(
+  bio_env,
   travel,
   log_offset
 )
 
-combined_values <- terra::extract(
-  combined_covariates,
+static_values <- terra::extract(
+  static_covariates,
   pts
 ) %>%
   as_tibble() %>%
   dplyr::select(-ID)
 
-combined_data <- bind_cols(d, combined_values) %>%
-  mutate(effort = n(), .by = cell_number)
+static_data <- bind_cols(
+  d,
+  static_values
+) %>%
+  mutate(
+    effort = n(),
+    .by = cell_number
+  )
 
-write_csv(
-  combined_data,
-  file.path(out_dir, "model_data_environment.csv"),
+readr::write_csv(
+  static_data,
+  file.path(data_dir, "model_data_environment.csv"),
   na = ""
 )
 
-# 5. PREPARE MONTHLY CLIMATE DATA ----------------------------
+
+# 5. MONTHLY ENVIRONMENTAL DATA -----------------------------
 
 monthly_values <- vector("list", 12)
 
-for (m in 1:12) {
-  
+for (m in seq_len(12)) {
+
   idx <- which(d$month_number == m)
-  
+
   if (length(idx) == 0) next
-  
-  month_layers <- monthly_env[[
-    c(
-      paste0("tmin_", month.abb[m]),
-      paste0("tmax_", month.abb[m]),
-      paste0("precip_", month.abb[m])
-    )
-  ]]
-  
-  names(month_layers) <- c("tmin", "tmax", "precip")
-  
+
+  # Select monthly climate layers by position
+  layer_indices <- c(m, 12 + m, 24 + m)
+
+  month_layers <- monthly_env[[layer_indices]]
+
+  names(month_layers) <- c(
+    "tmin",
+    "tmax",
+    "precip"
+  )
+
   monthly_covariates <- c(
     month_layers,
     travel,
     log_offset
   )
-  
+
   extracted <- terra::extract(
     monthly_covariates,
     pts[idx]
   ) %>%
     as_tibble() %>%
     dplyr::select(-ID)
-  
+
   monthly_values[[m]] <- bind_cols(
     d[idx, ],
     extracted
   )
-  
+
   cat(month.abb[m], ":", length(idx), "observations\n")
 }
 
@@ -150,22 +161,10 @@ monthly_data <- bind_rows(monthly_values) %>%
     .by = c(cell_number, month_number)
   )
 
-write_csv(
+readr::write_csv(
   monthly_data,
-  file.path(out_dir, "model_data_monthly_environment.csv"),
+  file.path(data_dir, "model_data_monthly_environment.csv"),
   na = ""
 )
-
-
-
-
-
-
-
-
-
-
-
-
 
 

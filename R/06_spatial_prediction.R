@@ -48,7 +48,11 @@ env <- rast(
 
 names(env) <- tolower(names(env))
 
-required_bio <- c("bio1", "bio5", "bio12")
+required_bio <- c(
+  "bio6_min_temp",
+  "bio5_max_temp",
+  "bio12_precip"
+)
 
 if (!all(required_bio %in% names(env))) {
   stop(
@@ -78,12 +82,6 @@ predictors_M1 <- c(
   effort_M1
 )
 
-# Check predictor names
-required_M1 <- c(
-  "bio1", "bio5", "bio12",
-  "travel", "log_effort"
-)
-
 
 # Generate annual prediction
 prediction_M1 <- terra::predict(
@@ -99,16 +97,7 @@ prediction_M1 <- terra::predict(
 names(prediction_M1) <- "an_gambiae_predicted"
 
 
-# ------------------------------------------------------------
-# 4. M2: MONTHLY CLIMATE PREDICTIONS
-# ------------------------------------------------------------
-# ------------------------------------------------------------
-# 1. LOAD MONTHLY CLIMATE DATA
-# ------------------------------------------------------------
-
-# ------------------------------------------------------------
-# 1. LOAD MONTHLY CLIMATE DATA
-# ------------------------------------------------------------
+# Monthly
 
 monthly_file <- "data/processed/monthly_climate_uganda_1km.tif"
 
