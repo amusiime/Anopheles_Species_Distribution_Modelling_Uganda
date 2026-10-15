@@ -18,6 +18,9 @@ pts <- project(pts, crs(template))
 d$cell_number <- cellFromXY(template, crds(pts))
 
 
+# Filter observations with missing or 
+# non positive continental predictions
+
 d <- bind_cols(d, extract(annual, pts)[, -1, drop = FALSE]) |>
   mutate(
     continental_gambiae = extract(continental[[4]], pts)[, 2]
