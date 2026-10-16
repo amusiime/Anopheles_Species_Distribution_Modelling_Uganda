@@ -1,47 +1,43 @@
 
+# 04_fit_models.R
+# Fit annual and monthly negative-binomial abundance models
+
 library(tidyverse)
 library(MASS)
 
-# 1. Load prepared datasets
-annual <- read_csv("data/processed/model_data_annual.csv", show_col_types = FALSE)
-monthly <- read_csv("data/processed/model_data_monthly.csv", show_col_types = FALSE)
-
-# 2. Fit annual models
-annual_M1 <- glm.nb(
-  an_gambiae_total ~ tmin + tmax + precip + offset(log_effort),
-  data = annual
+# Load datasets ---------------------------------------------------------------
+annual <- readr::read_csv(
+  "data/processed/model_data_annual.csv", show_col_types = FALSE
 )
 
-annual_M2 <- glm.nb(
-  an_gambiae_total ~ tmin + tmax + precip +
-    offset(log_effort) + offset(log_continental),
-  data = annual
+monthly <- readr::read_csv(
+  "data/processed/model_data_monthly.csv", show_col_types = FALSE
 )
 
-# 3. Fit monthly models
-monthly_M1 <- glm.nb(
-  an_gambiae_total ~ tmin + tmax + precip + offset(log_effort),
-  data = monthly
-)
+# Fit models ------------------------------------------------------------------
+fit_models <- function(data) {
+  list(
+    M1 = MASS::glm.nb(
+      an_gambiae_total ~ tmin + tmax + precip + offset(log_effort),
+      data = data
+    ),
+    M2 = MASS::glm.nb(
+      an_gambiae_total ~ tmin + tmax + precip +
+        offset(log_effort) + offset(log_continental),
+      data = data
+    )
+  )
+}
 
-monthly_M2 <- glm.nb(
-  an_gambiae_total ~ tmin + tmax + precip +
-    offset(log_effort) + offset(log_continental),
-  data = monthly
-)
+annual_models <- fit_models(annual)
+monthly_models <- fit_models(monthly)
 
-# 4. Compare model summaries
-summary(annual_M1)
-summary(annual_M2)
-summary(monthly_M1)
-summary(monthly_M2)
-
-# 5. Save fitted models
+# Save models -----------------------------------------------------------------
 dir.create("outputs/models", recursive = TRUE, showWarnings = FALSE)
 
-saveRDS(annual_M1, "outputs/models/annual_M1.rds")
-saveRDS(annual_M2, "outputs/models/annual_M2.rds")
-saveRDS(monthly_M1, "outputs/models/monthly_M1.rds")
-saveRDS(monthly_M2, "outputs/models/monthly_M2.rds")
+saveRDS(annual_models$M1, "outputs/models/annual_M1.rds")
+saveRDS(annual_models$M2, "outputs/models/annual_M2.rds")
+saveRDS(monthly_models$M1, "outputs/models/monthly_M1.rds")
+saveRDS(monthly_models$M2, "outputs/models/monthly_M2.rds")
 
 

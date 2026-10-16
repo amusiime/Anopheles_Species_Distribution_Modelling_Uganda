@@ -1,12 +1,11 @@
 # ============================================================
 # run_all.R
 # Run the core Uganda vector abundance modelling workflow
-# ============================================================
+
 
 scripts <- c(
   "R/00_install_packages.R",
   "R/01_clean_data.R",
-  "R/01b_data_QA.R",
   "R/02_prepare_covariates.R",
   "R/03_prepare_model_data.R",
   "R/04_fit_models.R",
@@ -16,9 +15,8 @@ scripts <- c(
 )
 
 for (script in scripts) {
-  message("\n========== Running: ", script, " ==========")
   if (!file.exists(script)) stop("Script not found: ", script)
-  source(script, echo = TRUE)
+  source(script, local = FALSE)
 }
 
-message("\nWorkflow completed.")
+
