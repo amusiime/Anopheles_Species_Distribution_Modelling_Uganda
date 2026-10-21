@@ -14,9 +14,5 @@ scripts <- c(
   "R/07_final_prediction_map.R"
 )
 
-for (script in scripts) {
-  if (!file.exists(script)) stop("Script not found: ", script)
-  source(script, local = FALSE)
-}
-
+for (script in scripts) source(script)
 
