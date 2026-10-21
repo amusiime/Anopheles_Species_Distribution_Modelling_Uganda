@@ -14,5 +14,6 @@ scripts <- c(
   "R/07_final_prediction_map.R"
 )
 
+
 for (script in scripts) source(script)
 
