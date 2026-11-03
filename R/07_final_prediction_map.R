@@ -1,121 +1,262 @@
 
+
 # 07_final_prediction_map.R
-# Map annual predictions and monthly prediction panels
+# Create annual, monthly and annual-from-monthly abundance maps
+
+source(here::here("R", "config.R"))
 
 library(terra)
 library(ggplot2)
 library(patchwork)
 library(scales)
+library(purrr)
 
-dir.create("outputs/figures", recursive = TRUE, showWarnings = FALSE)
+# Settings --------------------------------------------------------------------
 
-# ---- Prediction files -------------------------------------------------------
-annual_files <- c(
-  annual_M1 = "outputs/predictions/annual_M1.tif",
-  annual_M2 = "outputs/predictions/annual_M2.tif"
+make_dir(paths$figures)
+
+models <- c("M3", "M4")
+map_clip_q <- 0.99
+
+# Prediction files ------------------------------------------------------------
+
+pred_file <- \(x) file.path(paths$predictions, x)
+
+annual_files <- set_names(
+  map(models, \(m) pred_file(paste0("annual_", m, ".tif"))),
+  models
 )
 
-monthly_files <- list(
-  M1 = sprintf("outputs/predictions/monthly_M1_%d.tif", 1:12),
-  M2 = sprintf("outputs/predictions/monthly_M2_%d.tif", 1:12)
+monthly_files <- set_names(
+  map(models, \(m) {
+    map(1:12, \(i) {
+      pred_file(sprintf("monthly_%s_%02d.tif", m, i))
+    })
+  }),
+  models
 )
 
-# ---- Check files ------------------------------------------------------------
-all_files <- c(annual_files, unlist(monthly_files))
-missing <- all_files[!file.exists(all_files)]
+derived_files <- set_names(
+  map(models, \(m) {
+    pred_file(paste0("annual_from_monthly_", m, ".tif"))
+  }),
+  models
+)
 
-if (length(missing)) {
-  stop("Missing prediction files: ", paste(missing, collapse = ", "))
-}
+# Training support ------------------------------------------------------------
 
-# ---- Common Uganda raster extent -------------------------------------------
-template <- rast(monthly_files$M1[1])[[1]]
-e <- ext(template)
-x_limits <- c(xmin(e), xmax(e))
-y_limits <- c(ymin(e), ymax(e))
-
-# Warn if any file has a different grid from the template
-for (f in all_files) {
-  if (!compareGeom(template, rast(f)[[1]], stopOnError = FALSE)) {
-    warning("Geometry differs from template: ", f)
+read_supported <- \(f) {
+  
+  r <- rast(f)
+  
+  leverage_file <- sub(
+    "\\.tif$",
+    "_leverage_ratio.tif",
+    f
+  )
+  
+  if (file.exists(leverage_file)) {
+    leverage <- rast(leverage_file)
+    r <- mask(r, ifel(leverage > 1, NA, 1))
   }
+  
+  r
 }
 
-# ---- Helper: shared colour limits ------------------------------------------
-# q = 1 uses the true max; q < 1 clamps the upper limit (robust to outliers)
-get_limits <- function(files, q = 1) {
-  rng <- sapply(files, function(f) {
-    v <- values(rast(f)[[1]], na.rm = TRUE)
-    c(min(v), quantile(v, q))
-  })
-  c(min(rng[1, ]), max(rng[2, ]))
+# Map extent ------------------------------------------------------------------
+
+map_extent <- as.vector(
+  ext(rast(annual_files[[1]]))
+)
+
+# Common colour limits --------------------------------------------------------
+
+get_limits <- \(files) {
+  
+  upper <- max(
+    map_dbl(files, \(f) {
+      
+      r <- read_supported(f)
+      v <- values(r, mat = FALSE)
+      v <- v[is.finite(v)]
+      
+      if (length(v) == 0) return(NA_real_)
+      
+      quantile(
+        v,
+        probs = map_clip_q,
+        na.rm = TRUE,
+        names = FALSE
+      )
+    }),
+    na.rm = TRUE
+  )
+  
+  c(0, upper)
 }
 
-# ---- Plot function ----------------------------------------------------------
-plot_raster <- function(file, title, limits = NULL) {
+# Plot function ---------------------------------------------------------------
+
+plot_map <- \(file, title, limits = NULL) {
   
-  r <- rast(file)[[1]]
-  dat <- as.data.frame(r, xy = TRUE, na.rm = TRUE)
-  names(dat)[3] <- "prediction"
+  r <- rast(file)
   
-  ggplot(dat, aes(x = x, y = y, fill = prediction)) +
+  leverage_file <- sub(
+    "\\.tif$",
+    "_leverage_ratio.tif",
+    file
+  )
+  
+  if (file.exists(leverage_file)) {
+    
+    leverage <- rast(leverage_file)
+    
+    r <- ifel(
+      leverage > 1,
+      NA,
+      r
+    )
+  }
+  
+  names(r) <- "prediction"
+  
+  map_data <- as.data.frame(
+    r,
+    xy = TRUE,
+    na.rm = FALSE
+  )
+  
+  if (is.null(limits)) {
+    limits <- get_limits(file)
+  }
+  
+  ggplot(map_data, aes(x = x, y = y, fill = prediction)) +
     geom_raster() +
-    coord_equal(
-      xlim = x_limits,
-      ylim = y_limits,
-      expand = FALSE
-    ) +
     scale_fill_viridis_c(
-      name = "Abundance",
+      name = "Predicted\nabundance",
+      option = "C",
       limits = limits,
       oob = scales::squish,
-      labels = label_number()
+      na.value = "grey85"
     ) +
-    labs(title = title, x = "Longitude", y = "Latitude") +
-    theme_minimal() +
+    coord_equal(
+      xlim = map_extent[1:2],
+      ylim = map_extent[3:4],
+      expand = FALSE
+    ) +
+    labs(
+      title = title,
+      x = "Longitude",
+      y = "Latitude"
+    ) +
+    theme_minimal(base_size = 11) +
     theme(
-      plot.title = element_text(hjust = 0.5),
-      axis.text = element_text(size = 7),
-      legend.title = element_text(size = 8),
-      legend.text = element_text(size = 7)
+      plot.title = element_text(
+        face = "bold",
+        hjust = 0.5
+      ),
+      axis.title = element_text(size = 9),
+      axis.text = element_text(size = 8),
+      panel.grid = element_blank(),
+      legend.position = "right"
     )
 }
 
-# ---- Annual maps ------------------------------------------------------------
-for (nm in names(annual_files)) {
+# Model labels ----------------------------------------------------------------
+
+get_model_label <- \(m) {
   
-  lim <- get_limits(annual_files[[nm]])
-  p <- plot_raster(annual_files[[nm]], nm, lim)
+  if (exists("model_labels") &&
+      !is.null(model_labels) &&
+      m %in% names(model_labels)) {
+    
+    return(model_labels[[m]])
+  }
   
-  ggsave(
-    sprintf("outputs/figures/%s.png", nm),
-    p, width = 8, height = 6, dpi = 300
-  )
+  m
 }
 
-# ---- Monthly maps -----------------------------------------------------------
-for (nm in names(monthly_files)) {
+# Annual prediction maps ------------------------------------------------------
+
+iwalk(annual_files, \(f, m) {
   
-  # Shared limits across all 12 months; 99th percentile avoids outlier washout
-  lim <- get_limits(monthly_files[[nm]], q = 0.99)
+  p <- plot_map(
+    f,
+    paste("Annual abundance:", get_model_label(m))
+  )
   
-  plots <- lapply(1:12, function(i) {
-    plot_raster(monthly_files[[nm]][i], month.abb[i], lim) +
-      theme(axis.title = element_blank())
+  ggsave(
+    filename = file.path(
+      paths$figures,
+      paste0("annual_", m, ".png")
+    ),
+    plot = p,
+    width = 9,
+    height = 7,
+    dpi = 300
+  )
+})
+
+# Annual maps derived from monthly predictions -------------------------------
+
+iwalk(derived_files, \(f, m) {
+  
+  if (file.exists(f)) {
+    
+    p <- plot_map(
+      f,
+      paste("Annual mean from monthly predictions:", get_model_label(m))
+    )
+    
+    ggsave(
+      filename = file.path(
+        paths$figures,
+        paste0("annual_from_monthly_", m, ".png")
+      ),
+      plot = p,
+      width = 9,
+      height = 7,
+      dpi = 300
+    )
+  }
+})
+
+# Monthly prediction maps -----------------------------------------------------
+
+iwalk(monthly_files, \(files, m) {
+  
+  limits <- get_limits(files)
+  
+  plots <- map2(files, month.abb, \(f, month) {
+    
+    plot_map(
+      f,
+      month,
+      limits
+    )
   })
   
-  monthly_map <- wrap_plots(plots, ncol = 4, nrow = 3, guides = "collect") +
+  monthly_plot <- wrap_plots(
+    plots,
+    ncol = 4
+  ) +
     plot_annotation(
-      title = paste("Monthly vector abundance predictions:", nm)
-    ) &
-    theme(legend.position = "right")
+      title = paste(
+        "Monthly malaria vector abundance:",
+        get_model_label(m)
+      )
+    )
   
   ggsave(
-    sprintf("outputs/figures/monthly_predictions_%s.png", nm),
-    monthly_map,
-    width = 16, height = 12, dpi = 200
+    filename = file.path(
+      paths$figures,
+      paste0("monthly_predictions_", m, ".png")
+    ),
+    plot = monthly_plot,
+    width = 14,
+    height = 10,
+    dpi = 300
   )
-}
+})
 
-message("Prediction maps saved in outputs/figures/.")
 

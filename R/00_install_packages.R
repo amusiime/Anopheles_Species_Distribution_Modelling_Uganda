@@ -1,18 +1,13 @@
-# ============================================================
 # 00_install_packages.R
-# Install/check packages used by the Uganda vector abundance workflow
-# ============================================================
+# Install the packages used by the workflow.
+# For exact reproducibility, also run renv::init() once and commit renv.lock.
 
 packages <- c(
-  "tidyverse", "lubridate", "janitor", "stringr", "terra",
-  "geodata", "MASS", "DHARMa", "patchwork", "viridis"
+  "tidyverse", "here", "janitor", "terra", "sf", "geodata",
+  "MASS", "DHARMa", "patchwork"
 )
 
-installed <- rownames(installed.packages())
-missing <- setdiff(packages, installed)
-
-if (length(missing) > 0) {
-  install.packages(missing)
-}
+missing <- setdiff(packages, rownames(installed.packages()))
+if (length(missing)) install.packages(missing)
 
 message("Package check complete.")

@@ -1,70 +1,179 @@
 
-library(terra)
+# 06_spatial_prediction.R
+# Annual and monthly spatial abundance predictions
 
-# Load models
-annual_M1  <- readRDS("outputs/models/annual_M1.rds")
-annual_M2  <- readRDS("outputs/models/annual_M2.rds")
-monthly_M1 <- readRDS("outputs/models/monthly_M1.rds")
-monthly_M2 <- readRDS("outputs/models/monthly_M2.rds")
+source(here::here("R", "config.R"))
+source(here::here("R", "prediction_inputs.R"))
 
-# Load covariates
-annual <- rast("data/raw/covariates2(1).tif")
-monthly <- rast("data/raw/worldclim/uganda_worldclim_monthly.tif")
-continental <- rast("data/raw/continental/uganda_preds_p.tif")
+dir.create(paths$predictions, recursive = TRUE, showWarnings = FALSE)
 
-names(annual) <- c("tmax", "tmin", "precip")
+# Load models and prediction inputs
+models <- list(
+  annual = readRDS(paths$models_annual),
+  monthly = readRDS(paths$models_monthly)
+)
 
-dir.create("outputs/predictions", recursive = TRUE, showWarnings = FALSE)
+model_names <- c("M3", "M4")
+
+ranges <- list(
+  annual = read_training_ranges("annual"),
+  monthly = read_training_ranges("monthly")
+)
+
+inp <- load_prediction_inputs()
+
+# Prediction function
+predict_map <- \(model, climate, file, dataset, save_outside = FALSE) {
+  
+  x <- c(inp$align(climate), inp$static, inp$offsets)
+  
+  x <- x[[all.vars(delete.response(terms(model)))]]
+  
+  # Calculate extrapolation leverage
+  lev <- leverage_ratio(model, x, ranges[[dataset]])
+  
+  writeRaster(
+    lev,
+    sub("\\.tif$", "_leverage_ratio.tif", file),
+    overwrite = TRUE
+  )
+  
+  # Mask open water
+  if (mask_open_water && "water" %in% names(x)) {
+    
+    w <- ranges[[dataset]]$max[
+      ranges[[dataset]]$variable == "water"
+    ]
+    
+    x <- terra::mask(
+      x,
+      terra::ifel(x[["water"]] > w, 1, NA),
+      inverse = TRUE
+    )
+  }
+  
+  # Clamp predictors to training ranges
+  if (extrapolation == "clamp") {
+    
+    cl <- clamp_to_training(x, ranges[[dataset]])
+    x <- cl$x
+    
+    if (save_outside) {
+      writeRaster(
+        cl$n_outside,
+        sub("\\.tif$", "_n_outside_training.tif", file),
+        overwrite = TRUE
+      )
+    }
+  }
+  
+  # Predict abundance
+  p <- terra::predict(
+    x,
+    model,
+    fun = \(model, data, ...) {
+      predict(
+        model,
+        newdata = data,
+        type = "response",
+        ...
+      )
+    },
+    na.rm = TRUE
+  )
+  
+  names(p) <- "prediction"
+  
+  writeRaster(
+    p,
+    file,
+    overwrite = TRUE
+  )
+  
+  p
+}
 
 # Annual predictions
-annual$log_effort <- 0
-
-writeRaster(
-  predict(annual, annual_M1, type = "response", na.rm = TRUE),
-  "outputs/predictions/annual_M1.tif",
-  overwrite = TRUE
-)
-
-continental_annual <- resample(continental[[4]], annual, method = "bilinear")
-annual$log_continental <- log(continental_annual)
-
-writeRaster(
-  predict(annual, annual_M2, type = "response", na.rm = TRUE),
-  "outputs/predictions/annual_M2.tif",
-  overwrite = TRUE
-)
-
-# Align continental predictions to the monthly grid
-template <- monthly[[1]]
-continental_monthly <- resample(continental[[4]], template, method = "bilinear")
-
-# Monthly predictions
-for (m in 1:12) {
+purrr::walk(model_names, \(m) {
   
-  x <- monthly[[c(m, m + 12, m + 24)]]
-  names(x) <- c("tmin", "tmax", "precip")
-  x <- resample(x, template, method = "bilinear")
-  x$log_effort <- 0
+  predict_map(
+    models$annual[[m]],
+    inp$annual_climate,
+    file.path(
+      paths$predictions,
+      paste0("annual_", m, ".tif")
+    ),
+    "annual",
+    TRUE
+  )
+})
+
+# Monthly predictions and annual means
+purrr::walk(model_names, \(m) {
   
-  # M1
-  p1 <- predict(x, monthly_M1, type = "response", na.rm = TRUE)
+  # Predict each month
+  r <- purrr::map(seq_along(month.abb), \(i) {
+    
+    climate <- inp$monthly_climate[[paste0(climate_vars, "_", month.abb[i])]]
+    
+    names(climate) <- climate_vars
+    
+    predict_map(
+      models$monthly[[m]],
+      climate,
+      file.path(
+        paths$predictions,
+        sprintf("monthly_%s_%02d.tif", m, i)
+      ),
+      "monthly"
+    )
+  }) |>
+    terra::rast()
   
+  names(r) <- month.abb
+  
+  # Save monthly predictions
   writeRaster(
-    p1,
-    paste0("outputs/predictions/monthly_M1_", m, ".tif"),
+    r,
+    file.path(
+      paths$predictions,
+      paste0("monthly_", m, "_all_months.tif")
+    ),
     overwrite = TRUE
   )
   
-  # M2
-  x$log_continental <- log(continental_monthly)
+  # Calculate annual mean abundance
+  ann <- terra::app(r, mean, na.rm = TRUE)
   
-  p2 <- predict(x, monthly_M2, type = "response", na.rm = TRUE)
+  names(ann) <- "prediction"
+  
+  f <- file.path(
+    paths$predictions,
+    paste0("annual_from_monthly_", m, ".tif")
+  )
   
   writeRaster(
-    p2,
-    paste0("outputs/predictions/monthly_M2_", m, ".tif"),
+    ann,
+    f,
     overwrite = TRUE
   )
-}
+  
+  # Calculate maximum monthly leverage
+  lev_files <- file.path(
+    paths$predictions,
+    sprintf("monthly_%s_%02d_leverage_ratio.tif", m, 1:12)
+  )
+  
+  lev <- terra::rast(lev_files) |>
+    terra::app(fun = max, na.rm = TRUE)
+  
+  names(lev) <- "leverage_ratio"
+  
+  writeRaster(
+    lev,
+    sub("\\.tif$", "_leverage_ratio.tif", f),
+    overwrite = TRUE
+  )
+})
 
 

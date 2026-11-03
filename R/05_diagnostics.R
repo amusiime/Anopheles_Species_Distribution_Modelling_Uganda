@@ -1,49 +1,46 @@
+
 # 05_diagnostics.R
+# Diagnose annual and monthly negative-binomial models
 
-library(DHARMa)
-library(tidyverse)
+source(here::here("R", "config.R"))
 
-files <- c(
-  annual_M1 = "outputs/models/annual_M1.rds",
-  annual_M2 = "outputs/models/annual_M2.rds",
-  monthly_M1 = "outputs/models/monthly_M1.rds",
-  monthly_M2 = "outputs/models/monthly_M2.rds"
-)
+# 1. Load fitted models ---------------------------------------------------
 
-mods <- lapply(files, readRDS)
+models <- list(
+  annual = readRDS(paths$models_annual),
+  monthly = readRDS(paths$models_monthly)
+) |>
+  purrr::list_flatten(name_spec = "{outer}_{inner}")
 
-dir.create("outputs/figures", recursive = TRUE, showWarnings = FALSE)
-dir.create("outputs/tables", recursive = TRUE, showWarnings = FALSE)
+# 2. Prepare output directories -------------------------------------------
 
-diagnostics <- purrr::imap_dfr(mods, function(m, name) {
-  sim <- simulateResiduals(m, n = 500)
+dir.create(paths$figures, recursive = TRUE, showWarnings = FALSE)
+dir.create(paths$tables, recursive = TRUE, showWarnings = FALSE)
+
+# 3. Run DHARMa diagnostics -----------------------------------------------
+
+diagnostics <- purrr::imap_dfr(models, \(m, name) {
+  sim <- DHARMa::simulateResiduals(m, n = 500, seed = 123)
   
-  png(paste0("outputs/figures/DHARMa_", name, ".png"),
-      width = 1600, height = 1200, res = 160)
+  png(
+    file.path(paths$figures, paste0("DHARMa_", name, ".png")),
+    width = 1600, height = 1200, res = 160
+  )
+  
   plot(sim)
   dev.off()
   
   tibble(
-    model = name, n = nobs(m),
-    uniformity_p = testUniformity(sim)$p.value,
-    dispersion_p = testDispersion(sim)$p.value,
-    zero_inflation_p = testZeroInflation(sim)$p.value
+    model = name,
+    n = nobs(m),
+    uniformity_p = DHARMa::testUniformity(sim, plot = FALSE)$p.value,
+    dispersion_p = DHARMa::testDispersion(sim, plot = FALSE)$p.value,
+    zero_inflation_p = DHARMa::testZeroInflation(sim, plot = FALSE)$p.value
   )
 })
 
-residuals <- purrr::imap_dfr(mods, function(m, name) {
-  observed <- model.response(model.frame(m))
-  predicted <- predict(m, type = "response")
-  
-  tibble(model = name, residual = observed - predicted)
-}) |>
-  group_by(model) |>
-  summarise(
-    n = n(),
-    RMSE = sqrt(mean(residual^2, na.rm = TRUE)),
-    mean_residual = mean(residual, na.rm = TRUE),
-    .groups = "drop"
-  )
+# 4. Save and display results ---------------------------------------------
 
-write_csv(diagnostics, "outputs/tables/DHARMa_summary.csv")
-write_csv(residuals, "outputs/tables/residual_summary.csv")
+write_csv(diagnostics, file.path(paths$tables, "DHARMa_summary.csv"))
+
+print(diagnostics)
