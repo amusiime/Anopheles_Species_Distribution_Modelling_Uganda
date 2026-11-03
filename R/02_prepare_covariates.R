@@ -1,63 +1,160 @@
 
-
 # 02_prepare_covariates.R
-# Prepare 1 km WorldClim covariates for Uganda
+
+# Prepare 1 km environmental covariates for Uganda
+
+source(here::here("R", "config.R"))
 
 library(terra)
 library(geodata)
+library(tidyverse)
 
-out_dir <- "data/raw/worldclim"
-dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-dir.create("data/processed", recursive = TRUE, showWarnings = FALSE)
+# Input files 
 
-# Uganda boundary
-uganda <- geodata::gadm("UGA", level = 0, path = out_dir)
+make_dir(paths$worldclim_dir)
+make_dir(dirname(paths$climate_annual))
 
-# Download WorldClim data for Uganda (~1 km)
-tmin <- geodata::worldclim_country("Uganda", "tmin", res = 0.5, path = out_dir, version = "2.1")
-tmax <- geodata::worldclim_country("Uganda", "tmax", res = 0.5, path = out_dir, version = "2.1")
-prec <- geodata::worldclim_country("Uganda", "prec", res = 0.5, path = out_dir, version = "2.1")
+landcover_files <- file.path(
+  paths$env_dir,
+  paste0("landcover_", landcover_classes, "_1992_2022.tif")
+)
 
-# Crop and mask to Uganda
-tmin <- mask(crop(tmin, uganda), uganda)
-tmax <- mask(crop(tmax, uganda), uganda)
-prec <- mask(crop(prec, uganda), uganda)
+footprint_file <- file.path(paths$env_dir, "footprint_2000_2024.tif")
 
-# Align rasters
-tmax <- resample(tmax, tmin, method = "bilinear")
-prec <- resample(prec, tmin, method = "bilinear")
+check_files(c(landcover_files, footprint_file))
 
-# Name monthly layers
-names(tmin) <- paste0("tmin_", month.abb)
-names(tmax) <- paste0("tmax_", month.abb)
-names(prec) <- paste0("precip_", month.abb)
+# Uganda boundary 
 
-# Save monthly covariates
+uganda <- geodata::gadm(
+  "UGA",
+  level = 0,
+  path = paths$worldclim_dir
+)
+
+# Monthly climate 
+
+get_worldclim <- function(var, prefix) {
+  
+  r <- geodata::worldclim_country(
+    "Uganda",
+    var = var,
+    res = 0.5,
+    path = paths$worldclim_dir,
+    version = "2.1"
+  )
+  
+  stopifnot(nlyr(r) == 12)
+  
+  r <- mask(crop(r, uganda), uganda)
+  names(r) <- paste0(prefix, "_", month.abb)
+  
+  r
+}
+
+monthly_climate <- c(
+  get_worldclim("tmin", "tmin"),
+  get_worldclim("tmax", "tmax"),
+  get_worldclim("prec", "precip")
+)
+
+stopifnot(
+  compareGeom(
+    monthly_climate[[1]],
+    monthly_climate,
+    stopOnError = FALSE
+  )
+)
+
 writeRaster(
-  c(tmin, tmax, prec),
-  "data/processed/uganda_worldclim_monthly_1km.tif",
-  overwrite = TRUE
+  monthly_climate,
+  paths$climate_monthly,
+  overwrite = TRUE,
+  datatype = "FLT4S"
 )
 
-# Calculate annual covariates
-annual <- c(
-  app(tmin, mean, na.rm = TRUE),
-  app(tmax, mean, na.rm = TRUE),
-  app(prec, sum, na.rm = TRUE)
+# Annual climate 
+
+annual_climate <- c(
+  mean(monthly_climate[[1:12]]),
+  mean(monthly_climate[[13:24]]),
+  sum(monthly_climate[[25:36]])
 )
 
-names(annual) <- c("tmin_mean", "tmax_mean", "precip_annual")
+names(annual_climate) <- climate_vars
+
+#FLT4S preserves decimal precision
+writeRaster(
+  annual_climate,
+  paths$climate_annual,
+  overwrite = TRUE,
+  datatype = "FLT4S"
+)
+
+# Common 1 km grid 
+
+template <- monthly_climate[[1]]
+
+# Land cover and human footprint 
+
+#Read multi-layer raster and align to
+#modelling grid,and checks that the output geometry matches my template
+
+read_stack <- function(file, prefix, years) {
+  
+  r <- rast(file)
+  
+  stopifnot(nlyr(r) == length(years))
+  
+  names(r) <- paste0(prefix, "_", years)
+  
+  r <- resample(r, template, method = "average") |>
+    mask(uganda)
+  
+  stopifnot(compareGeom(r, template, stopOnError = FALSE))
+  
+  r
+}
+
+#reads multiple land-cover raster files and 
+#processes each using read_stack()
+
+landcover <- map2(
+  landcover_files,
+  landcover_classes,
+  \(file, cl) read_stack(file, cl, landcover_years)
+) |>
+  purrr::reduce(c)
+
+footprint <- read_stack(
+  footprint_file,
+  "footprint",
+  footprint_years
+)
+
+# Save covariates 
 
 writeRaster(
-  annual,
-  "data/processed/uganda_worldclim_annual_1km.tif",
-  overwrite = TRUE
+  landcover,
+  paths$landcover,
+  overwrite = TRUE,
+  datatype = "FLT4S"
 )
 
+writeRaster(
+  footprint,
+  paths$footprint,
+  overwrite = TRUE,
+  datatype = "FLT4S"
+)
 
+# Final validation 
 
-
-
+stopifnot(
+  compareGeom(landcover, template, stopOnError = FALSE),
+  compareGeom(footprint, template, stopOnError = FALSE),
+  nlyr(landcover) == length(landcover_classes) * length(landcover_years),
+  nlyr(footprint) == length(footprint_years)
+)
 
 
 
