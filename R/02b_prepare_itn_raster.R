@@ -13,6 +13,9 @@ make_dir(dirname(paths$itn_raster))
 
 template <- read_climate("annual")[[1]]
 
+
+## https://data.malariaatlas.org/insecticide-treated-nets?version=202608
+
 # Prediction year=2024 in config.R
 itn <- read_itn() |>
   filter(year== pred_year$itn) |>
